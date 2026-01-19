@@ -7,8 +7,10 @@ import { Router, Request, Response } from 'express';
 import {
   getAllChannels,
   getChannel,
-  toggleChannelAssistant,
-} from '../services/storage';
+  updateChannelAssistant,
+  createChannel,
+  addChannelMember,
+} from '../services/supabase';
 import { ToggleAssistantRequest, ApiResponse, Channel } from '../types';
 
 const router = Router();
@@ -17,9 +19,9 @@ const router = Router();
  * GET /api/channels
  * List all channels
  */
-router.get('/', (_req: Request, res: Response<ApiResponse<Channel[]>>) => {
+router.get('/', async (_req: Request, res: Response<ApiResponse<Channel[]>>) => {
   try {
-    const channels = getAllChannels();
+    const channels = await getAllChannels();
     console.log(`📋 Fetched ${channels.length} channels`);
     res.json({ success: true, data: channels });
   } catch (error) {
@@ -32,10 +34,10 @@ router.get('/', (_req: Request, res: Response<ApiResponse<Channel[]>>) => {
  * GET /api/channels/:id
  * Get channel details by ID
  */
-router.get('/:id', (req: Request, res: Response<ApiResponse<Channel>>) => {
+router.get('/:id', async (req: Request, res: Response<ApiResponse<Channel>>) => {
   try {
     const { id } = req.params;
-    const channel = getChannel(id);
+    const channel = await getChannel(id);
 
     if (!channel) {
       return res.status(404).json({ success: false, error: 'Channel not found' });
@@ -50,13 +52,70 @@ router.get('/:id', (req: Request, res: Response<ApiResponse<Channel>>) => {
 });
 
 /**
+ * POST /api/channels
+ * Create a new channel
+ * Body: { name: string, description: string, userId: string }
+ */
+router.post('/', async (req: Request, res: Response<ApiResponse<Channel>>) => {
+  try {
+    const { name, description, userId } = req.body;
+
+    if (!name || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name and userId are required',
+      });
+    }
+
+    const channel = await createChannel(name, description || '', userId);
+    if (!channel) {
+      return res.status(500).json({ success: false, error: 'Failed to create channel' });
+    }
+
+    console.log(`📋 Created channel: ${channel.name}`);
+    res.json({ success: true, data: channel });
+  } catch (error) {
+    console.error('Error creating channel:', error);
+    res.status(500).json({ success: false, error: 'Failed to create channel' });
+  }
+});
+
+/**
+ * POST /api/channels/:id/join
+ * Join a channel
+ * Body: { userId: string }
+ */
+router.post('/:id/join', async (req: Request, res: Response<ApiResponse<Channel>>) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' });
+    }
+
+    const success = await addChannelMember(id, userId);
+    if (!success) {
+      return res.status(500).json({ success: false, error: 'Failed to join channel' });
+    }
+
+    const channel = await getChannel(id);
+    console.log(`👤 User joined channel: ${channel?.name}`);
+    res.json({ success: true, data: channel! });
+  } catch (error) {
+    console.error('Error joining channel:', error);
+    res.status(500).json({ success: false, error: 'Failed to join channel' });
+  }
+});
+
+/**
  * POST /api/channels/:id/toggle-assistant
  * Toggle AI assistant on/off for a channel
  * Body: { enabled: boolean }
  */
 router.post(
   '/:id/toggle-assistant',
-  (
+  async (
     req: Request<{ id: string }, ApiResponse<Channel>, ToggleAssistantRequest>,
     res: Response<ApiResponse<Channel>>
   ) => {
@@ -71,7 +130,7 @@ router.post(
         });
       }
 
-      const channel = toggleChannelAssistant(id, enabled);
+      const channel = await updateChannelAssistant(id, enabled);
 
       if (!channel) {
         return res.status(404).json({ success: false, error: 'Channel not found' });

@@ -1,13 +1,44 @@
 /**
  * FileUpload Component
  * Handles file upload and displays uploaded files for a channel
+ * Supports text files, PDFs, images, and archives
  * Only visible in channels, not in individual chats
  */
 
 import React, { useState, useRef } from 'react';
 import { useChat } from '../hooks/useChat';
-import { UploadedFile } from '../types';
+import { UploadedFile, SUPPORTED_FILE_TYPES } from '../types';
 import UserAvatar from './UserAvatar';
+
+// Supported file extensions for upload
+const SUPPORTED_EXTENSIONS = Object.keys(SUPPORTED_FILE_TYPES);
+const ACCEPT_STRING = SUPPORTED_EXTENSIONS.join(',');
+
+/**
+ * Get icon for file based on extension or MIME type
+ */
+function getFileIcon(fileName: string, mimeType?: string): string {
+  const ext = ('.' + fileName.split('.').pop()?.toLowerCase()) as keyof typeof SUPPORTED_FILE_TYPES;
+  if (SUPPORTED_FILE_TYPES[ext]) {
+    return SUPPORTED_FILE_TYPES[ext].icon;
+  }
+  // Fallback based on mime type
+  if (mimeType?.startsWith('image/')) return '🖼️';
+  if (mimeType?.includes('pdf')) return '📕';
+  if (mimeType?.includes('zip') || mimeType?.includes('archive')) return '📦';
+  return '📄';
+}
+
+/**
+ * Check if file can be previewed (text-based files)
+ */
+function canPreviewFile(fileName: string, mimeType?: string): boolean {
+  const ext = ('.' + fileName.split('.').pop()?.toLowerCase()) as keyof typeof SUPPORTED_FILE_TYPES;
+  if (SUPPORTED_FILE_TYPES[ext]) {
+    return SUPPORTED_FILE_TYPES[ext].category === 'text';
+  }
+  return mimeType?.startsWith('text/') || false;
+}
 
 interface FilePreviewModalProps {
   file: UploadedFile | null;
@@ -17,17 +48,28 @@ interface FilePreviewModalProps {
 function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   if (!file) return null;
 
+  const icon = getFileIcon(file.name, file.mimeType);
+  const previewable = canPreviewFile(file.name, file.mimeType);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal file-preview-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>📄 {file.name}</h3>
+          <h3>{icon} {file.name}</h3>
           <button className="modal-close" onClick={onClose}>
             ✕
           </button>
         </div>
         <div className="modal-body">
-          <pre className="file-preview-content">{file.content}</pre>
+          {previewable && file.content ? (
+            <pre className="file-preview-content">{file.content}</pre>
+          ) : (
+            <div className="file-no-preview">
+              <span className="file-no-preview-icon">{icon}</span>
+              <p>Preview not available for this file type</p>
+              <p className="file-no-preview-type">{file.mimeType || 'Unknown type'}</p>
+            </div>
+          )}
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onClose}>
@@ -55,18 +97,22 @@ function FilesModal({ isOpen, onClose }: FilesModalProps) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check file type
-    const allowedExtensions = ['.txt', '.md', '.json', '.csv', '.xml', '.yaml', '.yml'];
-    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-    if (!allowedExtensions.includes(fileExtension)) {
-      setUploadError(`Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`);
+    // Check file extension
+    const fileExtension = ('.' + file.name.split('.').pop()?.toLowerCase()) as keyof typeof SUPPORTED_FILE_TYPES;
+    if (!SUPPORTED_FILE_TYPES[fileExtension]) {
+      setUploadError(`Invalid file type. Allowed types: ${SUPPORTED_EXTENSIONS.join(', ')}`);
       return;
     }
 
-    // Read file content
+    // Check file size (max 10MB)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      setUploadError('File too large. Maximum size is 10MB.');
+      return;
+    }
+
     try {
-      const content = await file.text();
-      await uploadFile(file.name, content);
+      await uploadFile(file);
       setUploadError(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -94,7 +140,7 @@ function FilesModal({ isOpen, onClose }: FilesModalProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".txt,.md,.json,.csv,.xml,.yaml,.yml"
+                accept={ACCEPT_STRING}
                 onChange={handleFileSelect}
                 className="files-upload-input"
                 id="file-upload"
@@ -104,7 +150,7 @@ function FilesModal({ isOpen, onClose }: FilesModalProps) {
                 {isLoading ? 'Uploading...' : '📤 Upload File'}
               </label>
               <span className="files-upload-hint">
-                Supported: .txt, .md, .json, .csv, .xml, .yaml
+                Supported: Text, PDF, Images, ZIP (max 10MB)
               </span>
               {uploadError && <div className="files-upload-error">{uploadError}</div>}
             </div>
@@ -124,7 +170,7 @@ function FilesModal({ isOpen, onClose }: FilesModalProps) {
                   className="file-item"
                   onClick={() => setSelectedFile(file)}
                 >
-                  <div className="file-item-icon">📄</div>
+                  <div className="file-item-icon">{getFileIcon(file.name, file.mimeType)}</div>
                   <div className="file-item-info">
                     <span className="file-item-name">{file.name}</span>
                     <span className="file-item-meta">

@@ -1,19 +1,65 @@
 /**
  * Files API Routes
  * Handles file upload and retrieval for channels
+ * Supports: text files, PDFs, images, and archives (ZIP)
  */
 
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 import {
   getFilesForChannel,
   addFile,
+  getFile,
   getUser,
   getChannel,
-  generateId,
-} from '../services/storage';
-import { UploadedFile, UploadFileRequest, ApiResponse } from '../types';
+  uploadFileToStorage,
+  getFileUrl,
+} from '../services/supabase';
+import { UploadedFile, ApiResponse, SUPPORTED_MIME_TYPES, SupportedMimeType } from '../types';
 
 const router = Router();
+
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, '../../uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max
+  },
+  fileFilter: (_req, file, cb) => {
+    const mimeType = file.mimetype as SupportedMimeType;
+    if (SUPPORTED_MIME_TYPES[mimeType]) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported file type: ${file.mimetype}`));
+    }
+  },
+});
+
+/**
+ * Get file category from MIME type
+ */
+function getFileCategory(mimeType: string): string {
+  const typeInfo = SUPPORTED_MIME_TYPES[mimeType as SupportedMimeType];
+  return typeInfo?.category || 'unknown';
+}
+
+/**
+ * Check if file content should be stored (text files only)
+ */
+function shouldStoreContent(mimeType: string): boolean {
+  const category = getFileCategory(mimeType);
+  return category === 'text';
+}
 
 /**
  * GET /api/files/:channelId
@@ -21,12 +67,12 @@ const router = Router();
  */
 router.get(
   '/:channelId',
-  (req: Request, res: Response<ApiResponse<UploadedFile[]>>) => {
+  async (req: Request, res: Response<ApiResponse<UploadedFile[]>>) => {
     try {
       const { channelId } = req.params;
 
       // Verify channel exists
-      const channel = getChannel(channelId);
+      const channel = await getChannel(channelId);
       if (!channel) {
         return res.status(404).json({
           success: false,
@@ -34,7 +80,7 @@ router.get(
         });
       }
 
-      const files = getFilesForChannel(channelId);
+      const files = await getFilesForChannel(channelId);
       console.log(`📁 Fetched ${files.length} files for channel: ${channel.name}`);
       res.json({ success: true, data: files });
     } catch (error) {
@@ -46,31 +92,26 @@ router.get(
 
 /**
  * POST /api/files/:channelId
- * Upload a file to a channel
- * Body: { name: string, content: string, userId: string }
+ * Upload a file to a channel (multipart form data)
  */
 router.post(
   '/:channelId',
-  (
-    req: Request<{ channelId: string }, ApiResponse<UploadedFile>, UploadFileRequest>,
-    res: Response<ApiResponse<UploadedFile>>
-  ) => {
+  upload.single('file'),
+  async (req: Request, res: Response<ApiResponse<UploadedFile>>) => {
     try {
       const { channelId } = req.params;
-      const { name, content, userId } = req.body;
+      const userId = req.body.userId;
+      const uploadedFile = req.file;
 
-      // Validate request
-      if (!name || !name.trim()) {
-        return res.status(400).json({
-          success: false,
-          error: 'File name is required',
-        });
+      // Handle JSON body for text content (backwards compatibility)
+      if (!uploadedFile && req.body.name && req.body.content) {
+        return handleTextFileUpload(req, res, channelId);
       }
 
-      if (!content) {
+      if (!uploadedFile) {
         return res.status(400).json({
           success: false,
-          error: 'File content is required',
+          error: 'No file provided',
         });
       }
 
@@ -82,7 +123,7 @@ router.post(
       }
 
       // Verify channel exists
-      const channel = getChannel(channelId);
+      const channel = await getChannel(channelId);
       if (!channel) {
         return res.status(404).json({
           success: false,
@@ -91,7 +132,7 @@ router.post(
       }
 
       // Get the uploader
-      const uploader = getUser(userId);
+      const uploader = await getUser(userId);
       if (!uploader) {
         return res.status(404).json({
           success: false,
@@ -99,53 +140,167 @@ router.post(
         });
       }
 
-      // Validate file extension (only allow text files for demo)
-      const allowedExtensions = ['.txt', '.md', '.json', '.csv', '.xml', '.yaml', '.yml'];
-      const fileExtension = name.substring(name.lastIndexOf('.')).toLowerCase();
-      if (!allowedExtensions.includes(fileExtension)) {
-        return res.status(400).json({
+      const mimeType = uploadedFile.mimetype;
+      const fileName = uploadedFile.originalname;
+      const fileSize = uploadedFile.size;
+      
+      // Generate unique storage path
+      const fileExtension = path.extname(fileName);
+      const storagePath = `${channelId}/${uuidv4()}${fileExtension}`;
+
+      // For text files, extract content for AI context
+      let content: string | undefined;
+      if (shouldStoreContent(mimeType)) {
+        content = uploadedFile.buffer.toString('utf-8');
+      }
+
+      // Save file to local storage (or Supabase Storage if configured)
+      const localPath = path.join(uploadsDir, storagePath);
+      const localDir = path.dirname(localPath);
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      fs.writeFileSync(localPath, uploadedFile.buffer);
+
+      // Also try to upload to Supabase Storage
+      try {
+        await uploadFileToStorage('channel-files', storagePath, uploadedFile.buffer, mimeType);
+      } catch (storageError) {
+        console.warn('Supabase storage upload failed, using local storage:', storageError);
+      }
+
+      // Create file record in database
+      const file = await addFile(
+        fileName,
+        fileSize,
+        mimeType,
+        storagePath,
+        content,
+        userId,
+        channelId
+      );
+
+      if (!file) {
+        return res.status(500).json({
           success: false,
-          error: `Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`,
+          error: 'Failed to save file record',
         });
       }
 
-      // Create the file
-      const file: UploadedFile = {
-        id: generateId('file'),
-        name: name.trim(),
-        size: content.length,
-        uploadedBy: uploader,
-        uploadedAt: new Date(),
-        content,
-        channelId,
-      };
-
-      // Save the file
-      addFile(file);
-
       console.log(
-        `📤 File uploaded by ${uploader.name} to ${channel.name}: ${file.name} (${file.size} bytes)`
+        `📤 File uploaded by ${uploader.name} to ${channel.name}: ${fileName} (${fileSize} bytes, ${mimeType})`
       );
       res.status(201).json({ success: true, data: file });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading file:', error);
+      if (error.message?.includes('Unsupported file type')) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
       res.status(500).json({ success: false, error: 'Failed to upload file' });
     }
   }
 );
 
 /**
+ * Handle text file upload via JSON body (backwards compatibility)
+ */
+async function handleTextFileUpload(
+  req: Request,
+  res: Response<ApiResponse<UploadedFile>>,
+  channelId: string
+) {
+  const { name, content, userId } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({
+      success: false,
+      error: 'File name is required',
+    });
+  }
+
+  if (!content) {
+    return res.status(400).json({
+      success: false,
+      error: 'File content is required',
+    });
+  }
+
+  if (!userId) {
+    return res.status(400).json({
+      success: false,
+      error: 'User ID is required',
+    });
+  }
+
+  // Verify channel exists
+  const channel = await getChannel(channelId);
+  if (!channel) {
+    return res.status(404).json({
+      success: false,
+      error: 'Channel not found',
+    });
+  }
+
+  // Get the uploader
+  const uploader = await getUser(userId);
+  if (!uploader) {
+    return res.status(404).json({
+      success: false,
+      error: 'User not found',
+    });
+  }
+
+  // Determine MIME type from extension
+  const ext = path.extname(name).toLowerCase();
+  const mimeTypeMap: Record<string, string> = {
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.json': 'application/json',
+    '.csv': 'text/csv',
+    '.xml': 'application/xml',
+    '.yaml': 'text/yaml',
+    '.yml': 'text/yaml',
+  };
+
+  const mimeType = mimeTypeMap[ext] || 'text/plain';
+  const storagePath = `${channelId}/${uuidv4()}${ext}`;
+
+  // Create file record
+  const file = await addFile(
+    name.trim(),
+    content.length,
+    mimeType,
+    storagePath,
+    content,
+    userId,
+    channelId
+  );
+
+  if (!file) {
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to save file',
+    });
+  }
+
+  console.log(
+    `📤 Text file uploaded by ${uploader.name} to ${channel.name}: ${file.name} (${file.size} bytes)`
+  );
+  res.status(201).json({ success: true, data: file });
+}
+
+/**
  * GET /api/files/:channelId/:fileId
- * Get a specific file's content
+ * Get a specific file's metadata and content
  */
 router.get(
   '/:channelId/:fileId',
-  (req: Request, res: Response<ApiResponse<UploadedFile>>) => {
+  async (req: Request, res: Response<ApiResponse<UploadedFile>>) => {
     try {
       const { channelId, fileId } = req.params;
 
       // Verify channel exists
-      const channel = getChannel(channelId);
+      const channel = await getChannel(channelId);
       if (!channel) {
         return res.status(404).json({
           success: false,
@@ -153,11 +308,10 @@ router.get(
         });
       }
 
-      // Find the file
-      const files = getFilesForChannel(channelId);
-      const file = files.find((f) => f.id === fileId);
+      // Get file
+      const file = await getFile(fileId);
 
-      if (!file) {
+      if (!file || file.channelId !== channelId) {
         return res.status(404).json({
           success: false,
           error: 'File not found',
@@ -169,6 +323,56 @@ router.get(
     } catch (error) {
       console.error('Error fetching file:', error);
       res.status(500).json({ success: false, error: 'Failed to fetch file' });
+    }
+  }
+);
+
+/**
+ * GET /api/files/:channelId/:fileId/download
+ * Download a file
+ */
+router.get(
+  '/:channelId/:fileId/download',
+  async (req: Request, res: Response) => {
+    try {
+      const { channelId, fileId } = req.params;
+
+      const file = await getFile(fileId);
+      if (!file || file.channelId !== channelId) {
+        return res.status(404).json({
+          success: false,
+          error: 'File not found',
+        });
+      }
+
+      // Try to get from local storage first
+      const localPath = path.join(uploadsDir, file.storagePath);
+      if (fs.existsSync(localPath)) {
+        res.setHeader('Content-Type', file.mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+        return res.sendFile(localPath);
+      }
+
+      // Try to get URL from Supabase Storage
+      const url = await getFileUrl('channel-files', file.storagePath);
+      if (url) {
+        return res.redirect(url);
+      }
+
+      // If content is stored in DB (text files), return it
+      if (file.content) {
+        res.setHeader('Content-Type', file.mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+        return res.send(file.content);
+      }
+
+      return res.status(404).json({
+        success: false,
+        error: 'File content not available',
+      });
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      res.status(500).json({ success: false, error: 'Failed to download file' });
     }
   }
 );

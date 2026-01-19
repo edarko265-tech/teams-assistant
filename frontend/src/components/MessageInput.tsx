@@ -1,7 +1,7 @@
 /**
  * MessageInput Component
- * Text input for sending messages
- * Includes @Assistant button for channels with AI enabled
+ * Modern message input with rich controls and AI assistant integration
+ * Includes emoji, attachment, and @Assistant functionality
  */
 
 import React, { useState, useRef, useCallback, KeyboardEvent } from 'react';
@@ -46,22 +46,22 @@ function AssistantModal({ isOpen, onClose, onSubmit, isLoading }: AssistantModal
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal assistant-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>🤖 Ask AI Assistant</h3>
+      <div className="modal assistant-modal animate-scale-in" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header ai-gradient">
+          <h3>✨ Ask AI Assistant</h3>
           <button className="modal-close" onClick={onClose}>
             ✕
           </button>
         </div>
         <div className="modal-body">
           <p className="assistant-modal-hint">
-            Ask a question about the channel's messages and files. The assistant will
-            use the conversation history as context.
+            Ask a question about the channel's messages and files. The AI will
+            analyze the conversation history to provide helpful answers.
           </p>
           <textarea
             ref={inputRef}
             className="assistant-modal-input"
-            placeholder="Type your question here..."
+            placeholder="What would you like to know?"
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -74,7 +74,7 @@ function AssistantModal({ isOpen, onClose, onSubmit, isLoading }: AssistantModal
             Cancel
           </button>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary ai-gradient"
             onClick={handleSubmit}
             disabled={!question.trim() || isLoading}
           >
@@ -130,6 +130,15 @@ export function MessageInput() {
   return (
     <div className="message-input-container">
       <div className="message-input-wrapper">
+        {/* Left side actions */}
+        <div className="message-input-left-actions">
+          <button className="input-action-btn" title="Add attachment">
+            <span>+</span>
+          </button>
+        </div>
+        
+        <div className="message-input-divider"></div>
+        
         <textarea
           ref={textareaRef}
           className="message-input"
@@ -140,15 +149,23 @@ export function MessageInput() {
           rows={1}
           disabled={isLoading}
         />
-        <div className="message-input-actions">
+        
+        {/* Right side actions */}
+        <div className="message-input-right-actions">
+          <button className="input-action-btn" title="Add emoji">
+            😊
+          </button>
+          <button className="input-action-btn" title="GIF">
+            🎞️
+          </button>
           {isAssistantAvailable && (
             <button
-              className="btn btn-assistant"
+              className="btn btn-assistant ai-glow"
               onClick={() => setShowAssistantModal(true)}
               title="Ask AI Assistant"
               disabled={isLoading}
             >
-              @Assistant
+              ✨ AI
             </button>
           )}
           <button
@@ -157,12 +174,18 @@ export function MessageInput() {
             disabled={!message.trim() || isLoading}
             title="Send message"
           >
-            {isLoading ? '⏳' : '➤'}
+            {isLoading ? (
+              <span className="btn-send-loading">⏳</span>
+            ) : (
+              <span className="btn-send-icon">➤</span>
+            )}
           </button>
         </div>
       </div>
       <div className="message-input-hint">
-        Press Enter to send, Shift+Enter for new line
+        <span>Press <kbd>Enter</kbd> to send</span>
+        <span className="hint-divider">•</span>
+        <span><kbd>Shift + Enter</kbd> for new line</span>
       </div>
 
       <AssistantModal

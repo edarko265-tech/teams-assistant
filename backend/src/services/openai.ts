@@ -104,9 +104,23 @@ export async function chat(
 export function buildContext(
   messages: Array<{ sender: { name: string }; content: string; timestamp: Date }>,
   files: Array<{ name: string; content: string }>,
+  users: Array<{ id: string; name: string; email: string; avatar?: string }> = [],
   maxLength: number = 12000
 ): string {
   let context = '';
+
+  // Add user profiles first (helps identify team members)
+  if (users.length > 0) {
+    context += '=== USER PROFILES ===\n\n';
+    for (const user of users) {
+      context += `User: ${user.name} (${user.email})`;
+      if (user.avatar) {
+        context += `, Avatar: ${user.avatar}`;
+      }
+      context += '\n';
+    }
+    context += '\n';
+  }
 
   // Add file contents first (they're usually more important for RAG)
   if (files.length > 0) {
@@ -148,11 +162,12 @@ export function createChannelAssistantPrompt(channelName: string): string {
 Your role is to help team members by answering questions based on the channel's context.
 
 Guidelines:
-- Answer questions using ONLY the provided channel messages and files
+- Answer questions using ONLY the provided channel messages, files, and user profiles
 - If the answer is not in the context, politely say "I couldn't find information about that in the channel history or files"
 - Be concise and helpful
 - If referring to information from a file, mention the file name
 - If referring to a previous message, mention who said it
+- If referring to a user profile, mention the person's name and email
 - Format your responses clearly using markdown when appropriate
 - Be friendly and professional`;
 }

@@ -213,6 +213,8 @@ const demoFiles: UploadedFile[] = [
     id: 'file-1',
     name: 'project-guidelines.md',
     size: 1250,
+    mimeType: 'text/markdown',
+    storagePath: 'demo/project-guidelines.md',
     uploadedBy: users.get('user-1')!,
     uploadedAt: hoursAgo(168), // 1 week ago
     content: `# Project Guidelines
@@ -240,6 +242,8 @@ const demoFiles: UploadedFile[] = [
     id: 'file-2',
     name: 'meeting-notes.txt',
     size: 450,
+    mimeType: 'text/plain',
+    storagePath: 'demo/meeting-notes.txt',
     uploadedBy: users.get('user-3')!,
     uploadedAt: hoursAgo(24),
     content: `Meeting Notes - January 18, 2026

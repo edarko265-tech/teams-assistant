@@ -58,7 +58,7 @@ export function useChat() {
     if (selectedChannel) {
       return selectedChannel.name;
     }
-    if (selectedChat) {
+    if (selectedChat && currentUser) {
       // Get the other participant's name
       const otherParticipant = selectedChat.participants.find(
         (p) => p.id !== currentUser.id
@@ -66,7 +66,7 @@ export function useChat() {
       return otherParticipant?.name || 'Chat';
     }
     return '';
-  }, [selectedChannel, selectedChat, currentUser.id]);
+  }, [selectedChannel, selectedChat, currentUser]);
 
   /**
    * Check if assistant is available (only in channels with assistantEnabled)
@@ -93,9 +93,9 @@ export function useChat() {
    * Get the other participant in a chat
    */
   const chatPartner = useMemo<User | undefined>(() => {
-    if (!selectedChat) return undefined;
+    if (!selectedChat || !currentUser) return undefined;
     return selectedChat.participants.find((p) => p.id !== currentUser.id);
-  }, [selectedChat, currentUser.id]);
+  }, [selectedChat, currentUser]);
 
   /**
    * Get members of the current channel
@@ -142,9 +142,9 @@ export function useChat() {
    * Upload file with validation
    */
   const handleUploadFile = useCallback(
-    async (name: string, content: string) => {
+    async (file: File) => {
       if (!canUploadFiles) return;
-      await uploadFile(name, content);
+      await uploadFile(file);
     },
     [uploadFile, canUploadFiles]
   );

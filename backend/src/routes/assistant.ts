@@ -6,12 +6,11 @@
 import { Router, Request, Response } from 'express';
 import {
   getChannel,
-  getLastMessages,
+  getMessagesForChannel,
   getFilesForChannel,
   addMessage,
   getUser,
-  generateId,
-} from '../services/storage';
+} from '../services/supabase';
 import {
   chat,
   buildContext,
@@ -22,12 +21,8 @@ import { AskAssistantRequest, ApiResponse, Message, User } from '../types';
 
 const router = Router();
 
-// Assistant user (for messages)
-const assistantUser: User = {
-  id: 'assistant',
-  name: 'AI Assistant',
-  email: 'assistant@teams.local',
-};
+// Assistant user ID (stored in database)
+const ASSISTANT_USER_ID = 'assistant';
 
 /**
  * POST /api/assistant/ask
@@ -76,7 +71,7 @@ router.post(
       }
 
       // Get the channel
-      const channel = getChannel(channelId);
+      const channel = await getChannel(channelId);
       if (!channel) {
         return res.status(404).json({
           success: false,
@@ -93,7 +88,7 @@ router.post(
       }
 
       // Verify the user exists
-      const user = getUser(userId);
+      const user = await getUser(userId);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -104,11 +99,15 @@ router.post(
       console.log(`🤖 Assistant query from ${user.name} in ${channel.name}: "${question}"`);
 
       // Get context: last 20 messages and all files
-      const recentMessages = getLastMessages(channelId, 20);
-      const channelFiles = getFilesForChannel(channelId);
+      const allMessages = await getMessagesForChannel(channelId);
+      const recentMessages = allMessages.slice(-20);
+      const channelFiles = await getFilesForChannel(channelId);
 
-      // Build context for RAG
-      const context = buildContext(recentMessages, channelFiles);
+      // Build context for RAG (only use files with content)
+      const textFiles = channelFiles
+        .filter((f) => typeof f.content === 'string' && f.content.length > 0)
+        .map((f) => ({ name: f.name, content: f.content! }));
+      const context = buildContext(recentMessages, textFiles, channel.members);
 
       // Create system prompt
       const systemPrompt = createChannelAssistantPrompt(channel.name);
@@ -116,18 +115,18 @@ router.post(
       // Call OpenAI
       const response = await chat(systemPrompt, question, context);
 
-      // Create assistant message
-      const assistantMessage: Message = {
-        id: generateId('msg'),
-        content: response,
-        sender: assistantUser,
-        timestamp: new Date(),
+      // Create assistant message in database
+      const assistantMessage = await addMessage(response, ASSISTANT_USER_ID, {
         channelId,
         isAssistant: true,
-      };
+      });
 
-      // Save the assistant's response as a message
-      addMessage(assistantMessage);
+      if (!assistantMessage) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to save assistant response',
+        });
+      }
 
       console.log(`✅ Assistant responded in ${channel.name}`);
       res.json({ success: true, data: assistantMessage });

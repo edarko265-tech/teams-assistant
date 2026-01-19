@@ -5,13 +5,13 @@
 
 import { Router, Request, Response } from 'express';
 import {
-  getMessagesFor,
+  getMessagesForChannel,
+  getMessagesForChat,
   addMessage,
   getUser,
   getChannel,
   getChat,
-  generateId,
-} from '../services/storage';
+} from '../services/supabase';
 import { Message, SendMessageRequest, ApiResponse } from '../types';
 
 const router = Router();
@@ -22,10 +22,25 @@ const router = Router();
  */
 router.get(
   '/:channelOrChatId',
-  (req: Request, res: Response<ApiResponse<Message[]>>) => {
+  async (req: Request, res: Response<ApiResponse<Message[]>>) => {
     try {
       const { channelOrChatId } = req.params;
-      const messages = getMessagesFor(channelOrChatId);
+      
+      // Check if it's a channel or chat by looking up in DB
+      const channel = await getChannel(channelOrChatId);
+      const chat = channel ? null : await getChat(channelOrChatId);
+      
+      let messages: Message[];
+      if (channel) {
+        messages = await getMessagesForChannel(channelOrChatId);
+      } else if (chat) {
+        messages = await getMessagesForChat(channelOrChatId);
+      } else {
+        return res.status(404).json({
+          success: false,
+          error: 'Channel or chat not found',
+        });
+      }
 
       console.log(
         `📨 Fetched ${messages.length} messages for: ${channelOrChatId}`
@@ -45,7 +60,7 @@ router.get(
  */
 router.post(
   '/:channelOrChatId',
-  (
+  async (
     req: Request<{ channelOrChatId: string }, ApiResponse<Message>, SendMessageRequest>,
     res: Response<ApiResponse<Message>>
   ) => {
@@ -69,7 +84,7 @@ router.post(
       }
 
       // Get the sender
-      const sender = getUser(userId);
+      const sender = await getUser(userId);
       if (!sender) {
         return res.status(404).json({
           success: false,
@@ -78,46 +93,29 @@ router.post(
       }
 
       // Check if it's a channel or chat
-      const isChannel = channelOrChatId.startsWith('channel-');
-      const isChat = channelOrChatId.startsWith('chat-');
+      const channel = await getChannel(channelOrChatId);
+      const chat = channel ? null : await getChat(channelOrChatId);
 
-      if (isChannel) {
-        const channel = getChannel(channelOrChatId);
-        if (!channel) {
-          return res.status(404).json({
-            success: false,
-            error: 'Channel not found',
-          });
-        }
-      } else if (isChat) {
-        const chat = getChat(channelOrChatId);
-        if (!chat) {
-          return res.status(404).json({
-            success: false,
-            error: 'Chat not found',
-          });
-        }
-      } else {
-        return res.status(400).json({
+      if (!channel && !chat) {
+        return res.status(404).json({
           success: false,
-          error: 'Invalid channel or chat ID',
+          error: 'Channel or chat not found',
         });
       }
 
       // Create the message
-      const message: Message = {
-        id: generateId('msg'),
-        content: content.trim(),
-        sender,
-        timestamp: new Date(),
-        ...(isChannel
-          ? { channelId: channelOrChatId }
-          : { chatId: channelOrChatId }),
+      const message = await addMessage(content.trim(), userId, {
+        channelId: channel ? channelOrChatId : undefined,
+        chatId: chat ? channelOrChatId : undefined,
         isAssistant: false,
-      };
+      });
 
-      // Save the message
-      addMessage(message);
+      if (!message) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to create message',
+        });
+      }
 
       console.log(
         `📤 New message from ${sender.name} in ${channelOrChatId}: "${content.substring(0, 50)}..."`

@@ -1,6 +1,6 @@
 /**
  * ChatWindow Component
- * Main chat area with header, message list, and input
+ * Modern chat area with glassmorphism header, message list, and input
  */
 
 import React from 'react';
@@ -37,24 +37,24 @@ export function ChatWindow() {
 
   return (
     <main className="chat-window">
-      {/* Header */}
+      {/* Header with glassmorphism */}
       <header className="chat-header">
         <div className="chat-header-left">
           {isChannel ? (
             <>
-              <span className="chat-header-icon">#</span>
+              <div className="chat-header-icon">#</div>
               <div className="chat-header-info">
                 <h2 className="chat-header-name">{conversationName}</h2>
                 {selectedChannel && (
                   <span className="chat-header-description">
-                    {selectedChannel.description}
+                    {selectedChannel.description || `${channelMembers.length} members`}
                   </span>
                 )}
               </div>
             </>
           ) : (
             <>
-              {chatPartner && <UserAvatar user={chatPartner} size="medium" />}
+              {chatPartner && <UserAvatar user={chatPartner} size="medium" status="online" />}
               <div className="chat-header-info">
                 <h2 className="chat-header-name">{conversationName}</h2>
                 <span className="chat-header-status">Direct message</span>
@@ -72,18 +72,32 @@ export function ChatWindow() {
           {/* Members indicator */}
           {isChannel && channelMembers.length > 0 && (
             <div className="chat-header-members" title="Channel members">
-              <span className="chat-header-members-icon">👥</span>
-              <span className="chat-header-members-count">
-                {channelMembers.length}
-              </span>
+              <div className="chat-header-members-avatars">
+                {channelMembers.slice(0, 3).map((member, idx) => (
+                  <div key={member.id} style={{ marginLeft: idx > 0 ? -8 : 0, zIndex: 3 - idx }}>
+                    <UserAvatar user={member} size="small" />
+                  </div>
+                ))}
+              </div>
+              {channelMembers.length > 3 && (
+                <span className="chat-header-members-count">
+                  +{channelMembers.length - 3}
+                </span>
+              )}
             </div>
           )}
+          {/* Action buttons */}
+          <div className="chat-header-actions">
+            <button className="chat-header-action-btn" title="Video call">📹</button>
+            <button className="chat-header-action-btn" title="Voice call">📞</button>
+            <button className="chat-header-action-btn" title="Pin messages">📌</button>
+          </div>
         </div>
       </header>
 
       {/* Error banner */}
       {error && (
-        <div className="chat-error-banner">
+        <div className="chat-error-banner animate-slide-up">
           <span className="chat-error-icon">⚠️</span>
           <span className="chat-error-message">{error}</span>
           <button className="chat-error-dismiss" onClick={clearError}>

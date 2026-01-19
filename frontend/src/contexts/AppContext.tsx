@@ -1,6 +1,7 @@
 /**
  * App Context - Global state management for Teams Assistant
  * Uses React Context API for state sharing across components
+ * Includes authentication with Supabase
  */
 
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
@@ -13,10 +14,14 @@ import {
   UploadedFile,
   AppContextValue,
   ApiResponse,
+  AuthSession,
 } from '../types';
 
-// API base URL
-const API_BASE_URL = 'http://localhost:5000/api';
+// API base URL (port 5001 because macOS AirPlay uses 5000)
+const API_BASE_URL = 'http://localhost:5001/api';
+
+// Storage keys
+const AUTH_STORAGE_KEY = 'teams_assistant_auth';
 
 // Create axios instance
 const api = axios.create({
@@ -26,12 +31,37 @@ const api = axios.create({
   },
 });
 
-// Demo current user (Alice Johnson)
-const CURRENT_USER: User = {
-  id: 'user-1',
-  name: 'Alice Johnson',
-  email: 'alice.johnson@company.com',
-};
+/**
+ * Load auth from localStorage
+ */
+function loadAuthFromStorage(): { user: User | null; session: AuthSession | null } {
+  try {
+    const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (stored) {
+      const data = JSON.parse(stored);
+      // Check if session is expired
+      if (data.session?.expires_at && Date.now() / 1000 > data.session.expires_at) {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        return { user: null, session: null };
+      }
+      return data;
+    }
+  } catch (e) {
+    console.error('Error loading auth from storage:', e);
+  }
+  return { user: null, session: null };
+}
+
+/**
+ * Save auth to localStorage
+ */
+function saveAuthToStorage(user: User | null, session: AuthSession | null) {
+  if (user && session) {
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, session }));
+  } else {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+}
 
 // Create context with default values
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -40,8 +70,15 @@ const AppContext = createContext<AppContextValue | undefined>(undefined);
  * App Provider component that wraps the entire application
  */
 export function AppProvider({ children }: { children: ReactNode }) {
-  // State
-  const [currentUser] = useState<User>(CURRENT_USER);
+  // Load initial auth state from storage
+  const initialAuth = loadAuthFromStorage();
+
+  // Auth state
+  const [currentUser, setCurrentUser] = useState<User | null>(initialAuth.user);
+  const [session, setSession] = useState<AuthSession | null>(initialAuth.session);
+  const isAuthenticated = !!currentUser && !!session;
+
+  // App state
   const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>();
   const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -51,10 +88,118 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Set auth header when session changes
+  useEffect(() => {
+    if (session?.access_token) {
+      api.defaults.headers.common['Authorization'] = `Bearer ${session.access_token}`;
+    } else {
+      delete api.defaults.headers.common['Authorization'];
+    }
+  }, [session]);
+
+  // ============================================================
+  // Authentication Methods
+  // ============================================================
+
+  /**
+   * Sign in with email and password
+   */
+  const signIn = useCallback(async (email: string, password: string) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await api.post<ApiResponse<{ user: User; session: AuthSession }>>('/auth/signin', {
+        email,
+        password,
+      });
+
+      if (response.data.success && response.data.data) {
+        const { user, session: newSession } = response.data.data;
+        setCurrentUser(user);
+        setSession(newSession);
+        saveAuthToStorage(user, newSession);
+        console.log('✅ Signed in:', user.email);
+      } else {
+        throw new Error(response.data.error || 'Sign in failed');
+      }
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.error || err.message || 'Sign in failed';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  /**
+   * Sign up with email, password, and name
+   */
+  const signUp = useCallback(async (email: string, password: string, name: string) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await api.post<ApiResponse<{ user: User; session: AuthSession }>>('/auth/signup', {
+        email,
+        password,
+        name,
+      });
+
+      if (response.data.success && response.data.data) {
+        const { user, session: newSession } = response.data.data;
+        setCurrentUser(user);
+        setSession(newSession);
+        saveAuthToStorage(user, newSession);
+        console.log('✅ Signed up:', user.email);
+      } else {
+        throw new Error(response.data.error || 'Sign up failed');
+      }
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.error || err.message || 'Sign up failed';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  /**
+   * Sign out
+   */
+  const signOut = useCallback(async () => {
+    setIsLoading(true);
+
+    try {
+      await api.post('/auth/signout');
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
+
+    // Clear state regardless of API call success
+    setCurrentUser(null);
+    setSession(null);
+    setChannels([]);
+    setChats([]);
+    setMessages([]);
+    setFiles([]);
+    setSelectedChannelId(undefined);
+    setSelectedChatId(undefined);
+    saveAuthToStorage(null, null);
+    setIsLoading(false);
+    console.log('✅ Signed out');
+  }, []);
+
+  // ============================================================
+  // Data Fetching Methods
+  // ============================================================
+
   /**
    * Fetch all channels
    */
   const fetchChannels = useCallback(async () => {
+    if (!isAuthenticated) return;
+
     try {
       const response = await api.get<ApiResponse<Channel[]>>('/channels');
       if (response.data.success && response.data.data) {
@@ -64,12 +209,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Error fetching channels:', err);
       setError('Failed to load channels');
     }
-  }, []);
+  }, [isAuthenticated]);
 
   /**
    * Fetch user's chats
    */
   const fetchChats = useCallback(async () => {
+    if (!isAuthenticated || !currentUser) return;
+
     try {
       const response = await api.get<ApiResponse<Chat[]>>('/chats', {
         params: { userId: currentUser.id },
@@ -81,14 +228,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Error fetching chats:', err);
       setError('Failed to load chats');
     }
-  }, [currentUser.id]);
+  }, [isAuthenticated, currentUser]);
 
   /**
    * Fetch messages for current channel or chat
    */
   const fetchMessages = useCallback(async () => {
     const targetId = selectedChannelId || selectedChatId;
-    if (!targetId) {
+    if (!targetId || !isAuthenticated) {
       setMessages([]);
       return;
     }
@@ -102,13 +249,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Error fetching messages:', err);
       setError('Failed to load messages');
     }
-  }, [selectedChannelId, selectedChatId]);
+  }, [selectedChannelId, selectedChatId, isAuthenticated]);
 
   /**
    * Fetch files for current channel
    */
   const fetchFiles = useCallback(async () => {
-    if (!selectedChannelId) {
+    if (!selectedChannelId || !isAuthenticated) {
       setFiles([]);
       return;
     }
@@ -121,7 +268,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error('Error fetching files:', err);
     }
-  }, [selectedChannelId]);
+  }, [selectedChannelId, isAuthenticated]);
+
+  // ============================================================
+  // Action Methods
+  // ============================================================
 
   /**
    * Set selected channel (clears chat selection)
@@ -148,7 +299,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const sendMessage = useCallback(async (content: string) => {
     const targetId = selectedChannelId || selectedChatId;
-    if (!targetId || !content.trim()) return;
+    if (!targetId || !content.trim() || !currentUser) return;
 
     setIsLoading(true);
     setError(null);
@@ -168,13 +319,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedChannelId, selectedChatId, currentUser.id]);
+  }, [selectedChannelId, selectedChatId, currentUser]);
 
   /**
    * Ask the AI assistant a question (channels only)
    */
   const askAssistant = useCallback(async (question: string) => {
-    if (!selectedChannelId || !question.trim()) return;
+    if (!selectedChannelId || !question.trim() || !currentUser) return;
 
     setIsLoading(true);
     setError(null);
@@ -196,7 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedChannelId, currentUser.id]);
+  }, [selectedChannelId, currentUser]);
 
   /**
    * Toggle AI assistant for current channel
@@ -231,18 +382,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /**
    * Upload a file to the current channel
    */
-  const uploadFile = useCallback(async (name: string, content: string) => {
-    if (!selectedChannelId) return;
+  const uploadFile = useCallback(async (file: File) => {
+    if (!selectedChannelId || !currentUser) return;
 
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await api.post<ApiResponse<UploadedFile>>(`/files/${selectedChannelId}`, {
-        name,
-        content,
-        userId: currentUser.id,
-      });
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('userId', currentUser.id);
+
+      const response = await api.post<ApiResponse<UploadedFile>>(
+        `/files/${selectedChannelId}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        }
+      );
 
       if (response.data.success && response.data.data) {
         setFiles((prev) => [...prev, response.data.data!]);
@@ -254,7 +413,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedChannelId, currentUser.id]);
+  }, [selectedChannelId, currentUser]);
 
   /**
    * Refresh messages (for polling)
@@ -270,20 +429,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
-  // Initial data fetch
+  // ============================================================
+  // Effects
+  // ============================================================
+
+  // Initial data fetch when authenticated
   useEffect(() => {
-    fetchChannels();
-    fetchChats();
-  }, [fetchChannels, fetchChats]);
+    if (isAuthenticated) {
+      fetchChannels();
+      fetchChats();
+    }
+  }, [isAuthenticated, fetchChannels, fetchChats]);
 
   // Fetch messages when selection changes
   useEffect(() => {
-    fetchMessages();
-    fetchFiles();
-  }, [fetchMessages, fetchFiles]);
+    if (isAuthenticated) {
+      fetchMessages();
+      fetchFiles();
+    }
+  }, [isAuthenticated, fetchMessages, fetchFiles]);
 
   // Poll for new messages every 3 seconds
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     const interval = setInterval(() => {
       if (selectedChannelId || selectedChatId) {
         fetchMessages();
@@ -291,18 +460,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [selectedChannelId, selectedChatId, fetchMessages]);
+  }, [isAuthenticated, selectedChannelId, selectedChatId, fetchMessages]);
 
   // Select first channel by default
   useEffect(() => {
-    if (channels.length > 0 && !selectedChannelId && !selectedChatId) {
+    if (isAuthenticated && channels.length > 0 && !selectedChannelId && !selectedChatId) {
       setSelectedChannelId(channels[0].id);
     }
-  }, [channels, selectedChannelId, selectedChatId]);
+  }, [isAuthenticated, channels, selectedChannelId, selectedChatId]);
 
   // Context value
   const value: AppContextValue = {
     currentUser,
+    session,
+    isAuthenticated,
     selectedChannelId,
     selectedChatId,
     channels,
@@ -311,6 +482,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     files,
     isLoading,
     error,
+    signIn,
+    signUp,
+    signOut,
     setSelectedChannel,
     setSelectedChat,
     sendMessage,
